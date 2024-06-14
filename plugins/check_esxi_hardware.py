@@ -15,16 +15,14 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
-# 02110-1301, USA.
+# along with this program; if not, see <https://www.gnu.org/licenses/>.
 #
 # Pre-req : pywbem
 #
 # Copyright (c) 2008 David Ligeret
 # Copyright (c) 2009 Joshua Daniel Franklin
 # Copyright (c) 2010 Branden Schneider
-# Copyright (c) 2010-2015 Claudio Kuenzler
+# Copyright (c) 2010-2022 Claudio Kuenzler
 # Copyright (c) 2010 Samir Ibradzic
 # Copyright (c) 2010 Aaron Rogers
 # Copyright (c) 2011 Ludovic Hutin
@@ -37,16 +35,20 @@
 # Copyright (c) 2013 Carl R. Friend
 # Copyright (c) 2015 Andreas Gottwald
 # Copyright (c) 2015 Stanislav German-Evtushenko
+# Copyright (c) 2015 Stefan Roos
+# Copyright (c) 2018 Peter Newman
+# Copyright (c) 2020 Luca Berra
+# Copyright (c) 2022 Marco Markgraf
 #
 # The VMware 4.1 CIM API is documented here:
 #   http://www.vmware.com/support/developer/cim-sdk/4.1/smash/cim_smash_410_prog.pdf
 #   http://www.vmware.com/support/developer/cim-sdk/smash/u2/ga/apirefdoc/
 #
-# The VMware 5.x CIM API is documented here:
-#   http://pubs.vmware.com/vsphere-50/index.jsp?nav=/5_1_1
+# The VMware 5.5 and above CIM API is documented here:
+#   https://code.vmware.com/apis/207/cim
 #
-# This Nagios plugin is maintained here:
-#   http://www.claudiokuenzler.com/nagios-plugins/check_esxi_hardware.php
+# This monitoring plugin is maintained and documented here:
+#   https://www.claudiokuenzler.com/monitoring-plugins/check_esxi_hardware.php
 #
 #@---------------------------------------------------
 #@ History
@@ -225,18 +227,86 @@
 #@ Author : Stanislav German-Evtushenko
 #@ Reason : Exit Unknown instead of Critical for timeouts and auth errors
 #@---------------------------------------------------
+#@ Date   : 20151111
+#@ Author : Stefan Roos
+#@ Reason : Removed unused sensor_value variable and string import.
+#@ Reason : Added global hosturl variable declaration after imports.
+#@---------------------------------------------------
+#@ Date   : 20160411
+#@ Author : Claudio Kuenzler (www.claudiokuenzler.com)
+#@ Reason : Distinguish between pywbem 0.7 and 0.8 (which is now released)
+#@---------------------------------------------------
+#@ Date   : 20160531
+#@ Author : Claudio Kuenzler (www.claudiokuenzler.com)
+#@ Reason : Add parameter for variable CIM port (useful when behind NAT)
+#@---------------------------------------------------
+#@ Date   : 20161013
+#@ Author : Claudio Kuenzler (www.claudiokuenzler.com)
+#@ Reason : Added support for pywbem 0.9.x (and upcoming releases)
+#@---------------------------------------------------
+#@ Date   : 20170905
+#@ Author : Claudio Kuenzler (www.claudiokuenzler.com)
+#@ Reason : Added option to ignore LCD/Display related elements (--no-lcd)
+#@---------------------------------------------------
+#@ Date   : 20180329
+#@ Author : Claudio Kuenzler (www.claudiokuenzler.com)
+#@ Reason : Try to use internal pywbem function to determine version
+#@---------------------------------------------------
+#@ Date   : 20180411
+#@ Author : Peter Newman
+#@ Reason : Throw an unknown if we can't fetch the data for some reason
+#@---------------------------------------------------
+#@ Date   : 20181001
+#@ Author : Claudio Kuenzler
+#@ Reason : python3 compatibility
+#@---------------------------------------------------
+#@ Date   : 20190510
+#@ Author : Claudio Kuenzler
+#@ Reason : Allow regular expressions from ignore list (-r)
+#@---------------------------------------------------
+#@ Date   : 20190701
+#@ Author : Phil Randal (phil.randal@gmail.com)
+#@ Reason : Fix lookup of warranty info for Dell (again)
+#@---------------------------------------------------
+#@ Date   : 20200605
+#@ Author : Luca Berra
+#@ Reason : Add option to ignore chassis intrusion (Supermicro)
+#@---------------------------------------------------
+#@ Date   : 20200605
+#@ Author : Claudio Kuenzler
+#@ Reason : Add parameter (-S) for custom SSL/TLS protocol version
+#@---------------------------------------------------
+#@ Date   : 20200710
+#@ Author : Claudio Kuenzler
+#@ Reason : Improve missing mandatory parameter error text (issue #47)
+#@          Delete temporary openssl config file after use (issue #48)
+#@---------------------------------------------------
+#@ Date   : 20210809
+#@ Author : Claudio Kuenzler
+#@ Reason : Fix TLSv1 usage (issue #51)
+#@---------------------------------------------------
+#@ Date   : 20220509
+#@ Author : Marco Markgraf
+#@ Reason : Added JSON-output (Zabbix needs it)
+#@---------------------------------------------------
+#@ Date   : 20221230
+#@ Author : Claudio Kuenzler
+#@ Reason : Fix bug when missing S/N (issue #68)
+#@---------------------------------------------------
 
+from __future__ import print_function
 import sys
 import time
 import pywbem
 import re
-import string
 import pkg_resources
+import json
 from optparse import OptionParser,OptionGroup
 
-version = '20150710'
+version = '20221230'
 
 NS = 'root/cimv2'
+hosturl = ''
 
 # define classes to check 'OperationStatus' instance
 ClassesToCheck = [
@@ -281,6 +351,7 @@ sensor_Type = {
 }
 
 data = []
+xdata = {}
 
 perf_Prefix = {
   1:'Pow',
@@ -297,6 +368,9 @@ perf_Prefix = {
 # host name
 hostname=''
 
+# cim port
+cimport=''
+
 # user
 user=''
 
@@ -309,6 +383,10 @@ vendor='unknown'
 # verbose
 verbose=False
 
+# output json
+format='string'
+pretty=False
+
 # Produce performance data output for nagios
 perfdata=False
 
@@ -317,6 +395,8 @@ timeout = 0
 
 # elements to ignore (full SEL, broken BIOS, etc)
 ignore_list=[]
+regex_ignore_list=[]
+regex=False
 
 # urlise model and tag numbers (currently only Dell supported, but the code does the right thing for other vendors)
 urlise_country=''
@@ -327,6 +407,8 @@ get_volts   = True
 get_current = True
 get_temp    = True
 get_fan     = True
+get_lcd     = True
+get_intrusion = True
 
 # define exit codes
 ExitOK = 0
@@ -399,7 +481,7 @@ def urlised_server_info(vendor, country, server_info):
   #server_inf = server_info
   if vendor == 'dell' :
     # Dell support URLs (idea and tables borrowed from check_openmanage)
-    du = 'http://www.dell.com/support/troubleshooting/' + dell_country(country) + '19/Product/poweredge-'
+    du = 'http://www.dell.com/support/home/' + dell_country(country) + '04/product-support/product/poweredge-'
     if (server_info is not None) :
       p=re.match('(.*)PowerEdge (.*) (.*)',server_info)
       if (p is not None) :
@@ -407,7 +489,7 @@ def urlised_server_info(vendor, country, server_info):
         if md == 'R210 II':
           md='r210-2'
         md=md.lower()
-        server_info = p.group(1) + '<a href="' + du + md + '#ui-tabs-4">PowerEdge ' + p.group(2)+'</a> ' + p.group(3)
+        server_info = p.group(1) + '<a href="' + du + md + '/">PowerEdge ' + p.group(2)+'</a> ' + p.group(3)
   elif vendor == 'hp':
     return server_info
   elif vendor == 'ibm':
@@ -422,8 +504,8 @@ def urlised_server_info(vendor, country, server_info):
 def system_tag_url(vendor,country):
   if vendor == 'dell':
     # Dell support sites
-    supportsite = 'http://www.dell.com/support/troubleshooting/'
-    dellsuffix = 'nodhs1/Index?t=warranty&servicetag='
+    supportsite = 'http://www.dell.com/support/home/'
+    dellsuffix = '19/product-support/servicetag/'
 
     # warranty URLs for different country codes
     return supportsite + dell_country(country) + dellsuffix
@@ -446,29 +528,36 @@ def urlised_serialnumber(vendor,country,SerialNumber):
 
 def verboseoutput(message) :
   if verbose:
-    print "%s %s" % (time.strftime("%Y%m%d %H:%M:%S"), message)
+    print(time.strftime("%Y%m%d %H:%M:%S"), message)
+
+# ----------------------------------------------------------------------
+
+def xdataprint():
+  if format == 'json' and not pretty:
+    print(json.dumps(xdata, sort_keys=True))
+  if format == 'json' and pretty:
+    print(json.dumps(xdata, sort_keys=True, indent=4))
 
 # ----------------------------------------------------------------------
 
 def getopts() :
-  global hosturl,user,password,vendor,verbose,perfdata,urlise_country,timeout,ignore_list,get_power,get_volts,get_current,get_temp,get_fan
-  usage = "usage: %prog  https://hostname user password system [verbose]\n" \
-    "example: %prog https://my-shiny-new-vmware-server root fakepassword dell\n\n" \
-    "or, using new style options:\n\n" \
-    "usage: %prog -H hostname -U username -P password [-V system -v -p -I XX]\n" \
-    "example: %prog -H my-shiny-new-vmware-server -U root -P fakepassword -V auto -I uk\n\n" \
+  global hosturl,hostname,cimport,sslproto,user,password,vendor,verbose,perfdata,urlise_country,timeout,ignore_list,regex,get_power,get_volts,get_current,get_temp,get_fan,get_lcd,get_intrusion,format,pretty
+  usage = "usage: %prog -H hostname -U username -P password [-C port -S proto -V vendor -v -p -I XX -i list,list -r]\n" \
+    "example: %prog -H hostname -U root -P password -C 5989 -V auto -I uk\n\n" \
     "or, verbosely:\n\n" \
-    "usage: %prog --host=hostname --user=username --pass=password [--vendor=system --verbose --perfdata --html=XX]\n"
+    "usage: %prog --host=hostname --user=username --pass=password [--cimport=port --sslproto=version --vendor=system --verbose --perfdata --html=XX --format=json --pretty]\n"
 
   parser = OptionParser(usage=usage, version="%prog "+version)
   group1 = OptionGroup(parser, 'Mandatory parameters')
   group2 = OptionGroup(parser, 'Optional parameters')
 
-  group1.add_option("-H", "--host", dest="host", help="report on HOST", metavar="HOST")
+  group1.add_option("-H", "--host", dest="host", help="connect to HOST", metavar="HOST")
   group1.add_option("-U", "--user", dest="user", help="user to connect as", metavar="USER")
   group1.add_option("-P", "--pass", dest="password", \
       help="password, if password matches file:<path>, first line of given file will be used as password", metavar="PASS")
 
+  group2.add_option("-C", "--cimport", dest="cimport", help="CIM port (default 5989)", metavar="CIMPORT")
+  group2.add_option("-S", "--sslproto", dest="sslproto", help="SSL/TLS protocol version to overwrite system default: SSLv2, SSLv3, TLSv1, TLSv1.1, TLSv1.2, TLSv1.3", metavar="SSLPROTO")
   group2.add_option("-V", "--vendor", dest="vendor", help="Vendor code: auto, dell, hp, ibm, intel, or unknown (default)", \
       metavar="VENDOR", type='choice', choices=['auto','dell','hp','ibm','intel','unknown'],default="unknown")
   group2.add_option("-v", "--verbose", action="store_true", dest="verbose", default=False, \
@@ -481,6 +570,8 @@ def getopts() :
       help="timeout in seconds - no effect on Windows (default = no timeout)")
   group2.add_option("-i", "--ignore", action="store", type="string", dest="ignore", default="", \
       help="comma-separated list of elements to ignore")
+  group2.add_option("-r", "--regex", action="store_true", dest="regex", default=False, \
+      help="allow regular expression lookup of ignore list")
   group2.add_option("--no-power", action="store_false", dest="get_power", default=True, \
       help="don't collect power performance data")
   group2.add_option("--no-volts", action="store_false", dest="get_volts", default=True, \
@@ -491,20 +582,28 @@ def getopts() :
       help="don't collect temperature performance data")
   group2.add_option("--no-fan", action="store_false", dest="get_fan", default=True, \
       help="don't collect fan performance data")
+  group2.add_option("--no-lcd", action="store_false", dest="get_lcd", default=True, \
+      help="don't collect lcd/front display status")
+  group2.add_option("--no-intrusion", action="store_false", dest="get_intrusion", default=True, \
+      help="don't collect chassis intrusion status")
+  group2.add_option("--format", dest="format", help="'string' (default) or 'json'", \
+      metavar="FORMAT", type='choice', choices=['string','json'],default="string")
+  group2.add_option("--pretty", action="store_true", dest="pretty", default=False, \
+      help="return data as a pretty-printed json-array")
 
   parser.add_option_group(group1)
   parser.add_option_group(group2)
 
   # check input arguments
   if len(sys.argv) < 2:
-    print "no parameters specified\n"
+    print("no parameters specified\n")
     parser.print_help()
     sys.exit(-1)
   # if first argument starts with 'https://' we have old-style parameters, so handle in old way
   if re.match("https://",sys.argv[1]):
     # check input arguments
     if len(sys.argv) < 5:
-      print "too few parameters\n"
+      print("too few parameters\n")
       parser.print_help()
       sys.exit(-1)
     if len(sys.argv) > 5 :
@@ -522,7 +621,7 @@ def getopts() :
     mandatories = ['host', 'user', 'password']
     for m in mandatories:
       if not options.__dict__[m]:
-        print "mandatory parameter '--" + m + "' is missing\n"
+        print("mandatory option '" + m + "' not defined. read usage in help.\n")
         parser.print_help()
         sys.exit(-1)
 
@@ -536,17 +635,24 @@ def getopts() :
 
     user=options.user
     password=options.password
+    cimport=options.cimport
+    ignore_list=options.ignore.split(',')
+    format=options.format
+    pretty=options.pretty
+    perfdata=options.perfdata
+    regex=options.regex
+    sslproto=options.sslproto
+    timeout=options.timeout
+    urlise_country=options.urlise_country.lower()
     vendor=options.vendor.lower()
     verbose=options.verbose
-    perfdata=options.perfdata
-    urlise_country=options.urlise_country.lower()
-    timeout=options.timeout
-    ignore_list=options.ignore.split(',')
     get_power=options.get_power
     get_volts=options.get_volts
     get_current=options.get_current
     get_temp=options.get_temp
     get_fan=options.get_fan
+    get_lcd=options.get_lcd
+    get_intrusion=options.get_intrusion
 
   # if user or password starts with 'file:', use the first string in file as user, second as password
   if (re.match('^file:', user) or re.match('^file:', password)):
@@ -575,27 +681,77 @@ if os_platform != "win32":
   on_windows = False
   import signal
   def handler(signum, frame):
-    print 'UNKNOWN: Execution time too long!'
+    print('UNKNOWN: Execution time too long!')
     sys.exit(ExitUnknown)
+
+# Use non-default CIM port
+if cimport:
+  verboseoutput("Using manually defined CIM port "+cimport)
+  hosturl += ':'+cimport
+
+# Use non-default SSL protocol version
+if sslproto:
+  verboseoutput("Using non-default SSL protocol: "+sslproto)
+  allowed_protos = ["SSLv2", "SSLv3", "TLSv1", "TLSv1.1", "TLSv1.2", "TLSv1.3"]
+  if any(proto.lower() == sslproto.lower() for proto in allowed_protos):
+    import os
+    sslconfpath = '/tmp/'+hostname+'_openssl.conf'
+    verboseoutput("Creating OpenSSL config file: "+sslconfpath)
+    try:
+      with open(sslconfpath, 'w') as config_file:
+          config_file.write("openssl_conf = openssl_init\n[openssl_init]\nssl_conf = ssl_configuration\n[ssl_configuration]\nsystem_default = tls_system_default\n[tls_system_default]\nMinProtocol = "+sslproto+"\n")
+    except Exception as e:
+      print('CRITICAL: An error occured while trying to write ssl config file: %s (%s)' % (sslconfpath, e))
+      sys.exit(ExitCritical)
+    os.environ["OPENSSL_CONF"] = sslconfpath
+  else:
+    print('CRITICAL: Invalid SSL protocol version given!')
+    sys.exit(ExitCritical)
+
+# Append lcd related elements to ignore list if --no-lcd was used
+verboseoutput("LCD Status: %s" % get_lcd)
+if not get_lcd:
+  ignore_list.append("System Board 1 LCD Cable Pres 0: Connected")
+  ignore_list.append("System Board 1 VGA Cable Pres 0: Connected")
+  ignore_list.append("Front Panel Board 1 FP LCD Cable 0: Connected")
+  ignore_list.append("Front Panel Board 1 FP LCD Cable 0: Config Error")
+
+# Append chassis intrusion related elements to ignore list if --no-intrusion was used
+verboseoutput("Chassis Intrusion Status: %s" % get_intrusion)
+if not get_intrusion:
+  ignore_list.append("System Chassis 1 Chassis Intru: General Chassis intrusion")
+  ignore_list.append("System Chassis 1 Chassis Intru: Drive Bay intrusion")
+  ignore_list.append("System Chassis 1 Chassis Intru: I/O Card area intrusion")
+  ignore_list.append("System Chassis 1 Chassis Intru: Processor area intrusion")
+  ignore_list.append("System Chassis 1 Chassis Intru: System unplugged from LAN")
+  ignore_list.append("System Chassis 1 Chassis Intru: Unauthorized dock")
+  ignore_list.append("System Chassis 1 Chassis Intru: FAN area intrusion")
+  ignore_list.append("System Chassis 1 Chassis Intru: Unknown")
 
 # connection to host
 verboseoutput("Connection to "+hosturl)
 # pywbem 0.7.0 handling is special, some patched 0.7.0 installations work differently
-pywbemversion = pkg_resources.get_distribution("pywbem").version
+try:
+  pywbemversion = pywbem.__version__
+except:
+  pywbemversion = pkg_resources.get_distribution("pywbem").version
+else:
+  pywbemversion = pywbem.__version__
 verboseoutput("Found pywbem version "+pywbemversion)
-if '0.7.0' in pywbemversion:
+
+if '0.7.' in pywbemversion:
   try:
     conntest = pywbem.WBEMConnection(hosturl, (user,password))
     c = conntest.EnumerateInstances('CIM_Card')
   except:
     #raise
-    verboseoutput("Connection error, disable SSL certification verification (probably patched pywbem)")
-    wbemclient = pywbem.WBEMConnection(hosturl, (user,password))
+    verboseoutput("Connection error, disable SSL certificate verification (probably patched pywbem)")
+    wbemclient = pywbem.WBEMConnection(hosturl, (user,password), no_verification=True)
   else:
     verboseoutput("Connection worked")
     wbemclient = pywbem.WBEMConnection(hosturl, (user,password))
 # pywbem 0.8.0 and later
-elif '0.8.0' in pywbemversion:
+else:
   wbemclient = pywbem.WBEMConnection(hosturl, (user,password), NS, no_verification=True)
 
 # Add a timeout for the script. When using with Nagios, the Nagios timeout cannot be < than plugin timeout.
@@ -615,16 +771,23 @@ ExitMsg = ""
 if vendor=='auto':
   try:
     c=wbemclient.EnumerateInstances('CIM_Chassis')
-  except pywbem.cim_operations.CIMError,args:
+  except pywbem.cim_operations.CIMError as args:
     if ( args[1].find('Socket error') >= 0 ):
-      print "UNKNOWN: %s" %args
+      print("UNKNOWN: {}".format(args))
+      sys.exit (ExitUnknown)
+    elif ( args[1].find('ThreadPool --- Failed to enqueue request') >= 0 ):
+      print("UNKNOWN: {}".format(args))
       sys.exit (ExitUnknown)
     else:
       verboseoutput("Unknown CIM Error: %s" % args)
-  except pywbem.cim_http.AuthError,arg:
+  except pywbem._exceptions.ConnectionError as args:
+    GlobalStatus = ExitUnknown
+    print("UNKNOWN: {}".format(args))
+    sys.exit (GlobalStatus)
+  except pywbem.cim_http.AuthError as arg:
     verboseoutput("Global exit set to UNKNOWN")
     GlobalStatus = ExitUnknown
-    print "UNKNOWN: Authentication Error"
+    print("UNKNOWN: Authentication Error")
     sys.exit (GlobalStatus)
   else:
     man=c[0][u'Manufacturer']
@@ -643,21 +806,27 @@ for classe in ClassesToCheck :
   verboseoutput("Check classe "+classe)
   try:
     instance_list = wbemclient.EnumerateInstances(classe)
-  except pywbem.cim_operations.CIMError,args:
+  except pywbem._cim_operations.CIMError as args:
     if ( args[1].find('Socket error') >= 0 ):
-      print "UNKNOWN: %s" %args
+      print("UNKNOWN: {}".format(args))
+      sys.exit (ExitUnknown)
+    elif ( args[1].find('ThreadPool --- Failed to enqueue request') >= 0 ):
+      print("UNKNOWN: {}".format(args))
       sys.exit (ExitUnknown)
     else:
       verboseoutput("Unknown CIM Error: %s" % args)
-  except pywbem.cim_http.AuthError,arg:
+  except pywbem._exceptions.ConnectionError as args:
+    GlobalStatus = ExitUnknown
+    print("UNKNOWN: {}".format(args))
+    sys.exit (GlobalStatus)
+  except pywbem._cim_http.AuthError as arg:
     verboseoutput("Global exit set to UNKNOWN")
     GlobalStatus = ExitUnknown
-    print "UNKNOWN: Authentication Error"
+    print("UNKNOWN: Authentication Error")
     sys.exit (GlobalStatus)
   else:
     # GlobalStatus = ExitOK #ARR
     for instance in instance_list :
-      sensor_value = ""
       elementName = instance['ElementName']
       if elementName is None :
         elementName = 'Unknown'
@@ -665,7 +834,13 @@ for classe in ClassesToCheck :
       verboseoutput("  Element Name = "+elementName)
 
       # Ignore element if we don't want it
-      if elementName in ignore_list :
+      if (regex == True) and (len(ignore_list) > 0) :
+        for ignore in ignore_list :
+          if re.search(ignore, elementName, re.IGNORECASE) :
+            verboseoutput("    (ignored through regex)")
+            regex_ignore_list.append(elementName)
+
+      if (elementName in ignore_list) or (elementName in regex_ignore_list) :
         verboseoutput("    (ignored)")
         continue
 
@@ -675,6 +850,8 @@ for classe in ClassesToCheck :
             + instance[u'VersionString'] + ' ' \
             + str(instance[u'ReleaseDate'].datetime.date())
         verboseoutput("    VersionString = "+instance[u'VersionString'])
+
+        xdata['Bios Info'] = bios_info
 
       elif elementName == 'Chassis' :
         man = instance[u'Manufacturer']
@@ -690,13 +867,15 @@ for classe in ClassesToCheck :
           model = instance[u'Model']
           if model:
             verboseoutput("    Model = "+model)
-            server_info +=  model + ' s/n:'
+            server_info +=  model
 
       elif elementName == 'Server Blade' :
         SerialNumber = instance[u'SerialNumber']
         if SerialNumber:
           verboseoutput("    SerialNumber = "+SerialNumber)
           isblade = "yes"
+
+      xdata['SerialNumber'] = SerialNumber
 
       # Report detail of Numeric Sensors and generate nagios perfdata
 
@@ -739,32 +918,37 @@ for classe in ClassesToCheck :
             if units == 7:            # Watts
               if get_power:
                 data.append( ("%s=%g;%g;%g " % (perf_el, cr, utnc, utc),1) )
+                xdata[perf_el] = { 'Unit': 'Watt', 'Value': cr, 'warn' : utnc, 'crit': utc }
             elif units == 6:          # Current
               if get_current:
                 data.append( ("%s=%g;%g;%g " % (perf_el, cr, utnc, utc),3) )
+                xdata[perf_el] = { 'Unit': 'Ampere', 'Value': cr, 'warn' : utnc, 'crit': utc }
 
           # PSU Voltage
           elif sensorType == 3:               # Voltage
             if get_volts:
               data.append( ("%s=%g;%g;%g " % (perf_el, cr, utnc, utc),2) )
+              xdata[perf_el] = { 'Unit': 'Volt', 'Value': cr, 'warn' : utnc, 'crit': utc }
 
           # Temperatures
           elif sensorType == 2:               # Temperature
             if get_temp:
               data.append( ("%s=%g;%g;%g " % (perf_el, cr, utnc, utc),4) )
+              xdata[perf_el] = { 'Value': cr, 'warn' : utnc, 'crit': utc }
 
           # Fan speeds
           elif sensorType == 5:               # Tachometer
             if get_fan:
-              if units == 65:           # percentage
+              if units == 65:                 # percentage
                 data.append( ("%s=%g%%;%g;%g " % (perf_el, cr, utnc, utc),6) )
+                xdata[perf_el] = { 'Unit': '%', 'Value': cr, 'warn' : utnc, 'crit': utc }
               else:
                 data.append( ("%s=%g;%g;%g " % (perf_el, cr, utnc, utc),5) )
+                xdata[perf_el] = { 'Value': cr, 'warn' : utnc, 'crit': utc }
 
       elif classe == "CIM_Processor" :
         verboseoutput("    Family = %d" % instance['Family'])
         verboseoutput("    CurrentClockSpeed = %dMHz" % instance['CurrentClockSpeed'])
-
 
       # HP Check
       if vendor == "hp" :
@@ -781,11 +965,11 @@ for classe in ClassesToCheck :
             30 : ExitCritical,  # Non-recoverable Error
           }[elementStatus]
           if (interpretStatus == ExitCritical) :
-            verboseoutput("GLobal exit set to CRITICAL")
+            verboseoutput("Global exit set to CRITICAL")
             GlobalStatus = ExitCritical
             ExitMsg += " CRITICAL : %s " % elementNameValue
           if (interpretStatus == ExitWarning and GlobalStatus != ExitCritical) :
-            verboseoutput("GLobal exit set to WARNING")
+            verboseoutput("Global exit set to WARNING")
             GlobalStatus = ExitWarning
             ExitMsg += " WARNING : %s " % elementNameValue
           # Added the following for when GlobalStatus is ExitCritical and a warning is detected
@@ -802,8 +986,6 @@ for classe in ClassesToCheck :
       elif (vendor == "dell" or vendor == "intel" or vendor == "ibm" or vendor=="unknown") :
         # Added 20121027 As long as Dell doesnt correct these CIM elements return code we have to ignore it
         ignore_list.append("System Board 1 Riser Config Err 0: Connected")
-        ignore_list.append("System Board 1 LCD Cable Pres 0: Connected")
-        ignore_list.append("System Board 1 VGA Cable Pres 0: Connected")
         ignore_list.append("Add-in Card 4 PEM Presence 0: Connected")
         if instance['OperationalStatus'] is not None :
           elementStatus = instance['OperationalStatus'][0]
@@ -836,7 +1018,7 @@ for classe in ClassesToCheck :
             GlobalStatus = ExitCritical
             ExitMsg += " CRITICAL : %s " % elementNameValue
           if (interpretStatus == ExitWarning and GlobalStatus != ExitCritical) :
-            verboseoutput("GLobal exit set to WARNING")
+            verboseoutput("Global exit set to WARNING")
             GlobalStatus = ExitWarning
             ExitMsg += " WARNING : %s " % elementNameValue
           # Added same logic as in 20100702 here, otherwise Dell servers would return UNKNOWN instead of OK
@@ -858,6 +1040,7 @@ if (urlise_country != '') :
 # If this is a blade server, also output chassis serial number as additional info
 if (isblade == "yes") :
   SerialNumber += " Chassis S/N: %s " % (SerialChassis)
+  xdata['ChassisSerialNumber'] = SerialChassis
 
 # Output performance data
 perf = '|'
@@ -879,14 +1062,28 @@ if perfdata:
 if perf == '|':
   perf = ''
 
+# Cleanup temporary openssl config
+if sslproto:
+  os.remove(sslconfpath)
+
+xdata['GlobalStatus'] = GlobalStatus
+
 if GlobalStatus == ExitOK :
-  print "OK - Server: %s %s %s%s" % (server_info, SerialNumber, bios_info, perf)
+  if format == 'string':
+    print("OK - Server: %s s/n: %s %s%s" % (server_info, SerialNumber, bios_info, perf))
+  else:
+    xdataprint()
 
 elif GlobalStatus == ExitUnknown :
-  print "UNKNOWN: %s" % (ExitMsg) #ARR
+  if format == 'string':
+    print("UNKNOWN: %s" % (ExitMsg)) #ARR
+  else:
+    xdataprint()
 
 else:
-  print "%s- Server: %s %s %s%s" % (ExitMsg, server_info, SerialNumber, bios_info, perf)
+  if format == 'string':
+    print("%s - Server:  %s %s %s%s" % (ExitMsg, server_info, 's/n: ' + SerialNumber, bios_info, perf))
+  else:
+    xdataprint()
 
 sys.exit (GlobalStatus)
-
