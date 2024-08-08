@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #
 # Icinga Plugin Script (Check Command). Ccalculates the average percentage of CPU load over multiple cores from SNMPWALK
 # Shchukin Maxim <dev@monologic.ru>
