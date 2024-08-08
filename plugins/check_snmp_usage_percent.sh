@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #
 # Icinga Plugin Script (Check Command). It calculate the percentage of Disk usage from received SNMP data
 # Aleksey Maksimov <aleksey.maksimov@it-kb.ru>
