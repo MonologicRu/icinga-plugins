@@ -142,18 +142,18 @@ foreach my $dev (@devices) {
         $dev->{Firmware}//'unknown', $used_gb, $percent_wear, $temp_c, $spare, $media_errors
     );
 
-    # Perfdata
+    # Perfdata (temperature first)
     $perfdata .= sprintf(
-        "'%s_temperature'=%dC;%d;%d '%s_available_spare'=%s;%d;%d '%s_data_read'=%dMB '%s_data_written'=%dMB '%s_power_cycles'=%d '%s_unsafe_shutdowns'=%d '%s_media_errors'=%d '%s_used_gb'=%s '%s_percent_wear'=%s ",
+        "'%s_temperature'=%dC;%d;%d '%s_available_spare'=%s;%d;%d '%s_percent_wear'=%s '%s_used_gb'=%s '%s_data_read'=%dMB '%s_data_written'=%dMB '%s_power_cycles'=%d '%s_unsafe_shutdowns'=%d '%s_media_errors'=%d ",
         $name_short,$temp_c,$TEMP_WARN,$TEMP_CRIT,
         $name_short,$spare,$SPARE_WARN,$SPARE_CRIT,
+        $name_short,$percent_wear,
+        $name_short,$used_gb,
         $name_short,$data_read_mb,
         $name_short,$data_written_mb,
         $name_short,$power_cycles,
         $name_short,$unsafe_shutdowns,
-        $name_short,$media_errors,
-        $name_short,$used_gb,
-        $name_short,$percent_wear
+        $name_short,$media_errors
     );
 }
 
@@ -167,3 +167,4 @@ if (!$overall_text) {
 
 print "$overall_text|$perfdata\n";
 exit $overall_status;
+
